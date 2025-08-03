@@ -327,12 +327,6 @@ We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) f
 
 MIT License - see [LICENSE](LICENSE) file for details.
 
-## Support
-
-- 📖 [Documentation](https://github.com/your-org/typespec-go-emitter/wiki)
-- 🐛 [Issue Tracker](https://github.com/your-org/typespec-go-emitter/issues)
-- 💬 [Discussions](https://github.com/your-org/typespec-go-emitter/discussions)
-
 ## Contributing
 
 We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for details.
@@ -341,12 +335,6 @@ We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) f
 
 MIT License - see [LICENSE](LICENSE) file for details.
 
-## Support
-
-- 📖 [Documentation](https://github.com/your-org/typespec-go-emitter/wiki)
-- 🐛 [Issue Tracker](https://github.com/your-org/typespec-go-emitter/issues)
-- 💬 [Discussions](https://github.com/your-org/typespec-go-emitter/discussions)
-
 ---
 
-Made with ❤️ for the Go and TypeSpec communities.
+Made with ❤️ by Muhammad Refy for the Go and TypeSpec communities.
