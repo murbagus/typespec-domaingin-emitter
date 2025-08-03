@@ -36,7 +36,7 @@ A TypeSpec emitter that generates Go structs and HTTP handlers specifically desi
 ## Installation
 
 ```bash
-npm install typespec-go-emitter
+npm install typespec-domaingin-emitter
 ```
 
 ## Quick Start
@@ -44,16 +44,16 @@ npm install typespec-go-emitter
 1. **Install dependencies**:
 
 ```bash
-npm install @typespec/compiler @typespec/http typespec-go-emitter
+npm install @typespec/compiler @typespec/http typespec-domaingin-emitter
 ```
 
 2. **Configure tspconfig.yaml**:
 
 ```yaml
 emit:
-  - "typespec-go-emitter"
+  - "typespec-domaingin-emitter"
 options:
-  "typespec-go-emitter":
+  "typespec-domaingin-emitter":
     emitter-output-dir: "./models"
     handler-output-dir: "./handlers"
     generate-comment: "//!Generate"
@@ -157,9 +157,9 @@ func (h *Handler) CreateUser(c *gin.Context) {
 ```yaml
 # tspconfig.yaml
 emit:
-  - "typespec-go-emitter"
+  - "typespec-domaingin-emitter"
 options:
-  "typespec-go-emitter":
+  "typespec-domaingin-emitter":
     emitter-output-dir: "./internal/domain"
     handler-output-dir: "./internal/handlers"
     generate-comment: "// @generate"
