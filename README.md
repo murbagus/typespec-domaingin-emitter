@@ -1,8 +1,8 @@
 # TypeSpec Go Gin Emitter
 
-![npm version](https://img.shields.io/npm/v/typespec-go-emitter.svg)
-![license](https://img.shields.io/npm/l/typespec-go-emitter.svg)
-![downloads](https://img.shields.io/npm/dt/typespec-go-emitter.svg)
+![npm version](https://img.shields.io/npm/v/typespec-domaingin-emitter.svg)
+![license](https://img.shields.io/npm/l/typespec-domaingin-emitter.svg)
+![downloads](https://img.shields.io/npm/dt/typespec-domaingin-emitter.svg)
 
 A TypeSpec emitter that generates Go structs and HTTP handlers specifically designed for **[github.com/gin-gonic/gin](https://github.com/gin-gonic/gin)** framework applications. This emitter produces handler code that follows Gin's conventions and patterns.
 
