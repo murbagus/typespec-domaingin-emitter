@@ -1,0 +1,824 @@
+import {
+  EmitContext,
+  Model,
+  ModelProperty,
+  Operation,
+  Program,
+  Type,
+  createTypeSpecLibrary,
+  getDoc,
+  getSourceLocation,
+  navigateProgram,
+} from "@typespec/compiler";
+import * as fs from "fs";
+import * as path from "path";
+
+export interface GoEmitterOptions {
+  "emitter-output-dir"?: string;
+  "handler-output-dir"?: string;
+  "generate-comment"?: string;
+}
+
+const libDef = createTypeSpecLibrary({
+  name: "typespec-go-emitter",
+  diagnostics: {},
+});
+
+export const { name, reportDiagnostic } = libDef;
+
+const defaultOptions = {
+  "emitter-output-dir": "../application/domain",
+  "handler-output-dir": "../drivers/delivery/http",
+  "generate-comment": "//!Generate",
+};
+
+export async function $onEmit(context: EmitContext<GoEmitterOptions>) {
+  const options = { ...defaultOptions, ...context.options };
+  const emitter = new GoEmitter(context, options);
+  emitter.emitProgram();
+}
+
+class GoEmitter {
+  private context: EmitContext<GoEmitterOptions>;
+  private options: GoEmitterOptions;
+  private program: Program;
+  private outputDir: string;
+  private handlerOutputDir: string;
+  private processedModelFiles = new Set<string>();
+  private modelsByFile = new Map<string, Model[]>();
+  private operationsByFile = new Map<
+    string,
+    { operations: Operation[]; models: Model[] }
+  >();
+
+  constructor(
+    context: EmitContext<GoEmitterOptions>,
+    options: GoEmitterOptions
+  ) {
+    this.context = context;
+    this.options = options;
+    this.program = context.program;
+
+    // Get the correct paths relative to the project root
+    // this.outputDir = path.resolve("../application/domain");
+    // this.handlerOutputDir = path.resolve("../drivers/delivery/http");
+    this.outputDir = path.resolve(
+      options["emitter-output-dir"] || "../application/domain"
+    );
+    this.handlerOutputDir = path.resolve(
+      options["handler-output-dir"] || "../drivers/delivery/http"
+    );
+  }
+
+  emitProgram() {
+    this.ensureOutputDirectories();
+    this.collectTypes();
+    this.emitModels();
+    this.emitHandlers();
+  }
+
+  private ensureOutputDirectories() {
+    if (!fs.existsSync(this.outputDir)) {
+      fs.mkdirSync(this.outputDir, { recursive: true });
+    }
+    if (!fs.existsSync(this.handlerOutputDir)) {
+      fs.mkdirSync(this.handlerOutputDir, { recursive: true });
+    }
+  }
+
+  private collectTypes() {
+    navigateProgram(this.program, {
+      model: (model) => {
+        const sourceFile = getSourceLocation(model)?.file;
+        if (sourceFile) {
+          // Handle models from /models/ directory (except common.tsp)
+          if (
+            sourceFile.path.includes("/models/") &&
+            !sourceFile.path.includes("common.tsp")
+          ) {
+            const fileName = path.basename(sourceFile.path, ".tsp");
+
+            if (!this.processedModelFiles.has(fileName)) {
+              this.processedModelFiles.add(fileName);
+              this.modelsByFile.set(fileName, []);
+            }
+
+            this.modelsByFile.get(fileName)?.push(model);
+          }
+
+          // Handle models from /routes/ directory for request structures
+          if (sourceFile.path.includes("/routes/")) {
+            const fileName = path.basename(sourceFile.path, ".tsp");
+
+            if (!this.operationsByFile.has(fileName)) {
+              this.operationsByFile.set(fileName, {
+                operations: [],
+                models: [],
+              });
+            }
+
+            // Only collect models that look like request structures
+            if (
+              model.name.toLowerCase().includes("request") ||
+              model.name.toLowerCase().includes("create") ||
+              model.name.toLowerCase().includes("update")
+            ) {
+              this.operationsByFile.get(fileName)?.models.push(model);
+            }
+          }
+        }
+      },
+      operation: (operation) => {
+        const sourceFile = getSourceLocation(operation)?.file;
+        if (sourceFile && sourceFile.path.includes("/routes/")) {
+          const fileName = path.basename(sourceFile.path, ".tsp");
+
+          if (!this.operationsByFile.has(fileName)) {
+            this.operationsByFile.set(fileName, { operations: [], models: [] });
+          }
+
+          this.operationsByFile.get(fileName)?.operations.push(operation);
+        }
+      },
+    });
+  }
+
+  private emitModels() {
+    for (const [fileName, models] of this.modelsByFile) {
+      this.emitModelFileFromModels(models, fileName);
+    }
+  }
+
+  private emitModelFileFromModels(models: Model[], fileName: string) {
+    const outputPath = path.join(this.outputDir, `${fileName}.go`);
+
+    let goCode = "";
+    let existingContent = "";
+
+    // Check if file already exists
+    if (fs.existsSync(outputPath)) {
+      existingContent = fs.readFileSync(outputPath, "utf8");
+
+      // Find the separator comment (try both variations)
+      let separatorIndex = existingContent.indexOf(
+        "// --- Generated by typespec ---"
+      );
+      if (separatorIndex === -1) {
+        separatorIndex = existingContent.indexOf(
+          "// --- Generaterd by typespec ---"
+        ); // Handle typo
+      }
+
+      if (separatorIndex !== -1) {
+        // Keep everything before the separator
+        existingContent = existingContent.substring(0, separatorIndex).trim();
+
+        if (existingContent) {
+          goCode = `${existingContent}\n\n`;
+        } else {
+          goCode = `package domain\n\n`;
+        }
+      } else {
+        // If no separator found, assume all content is user-written
+        if (existingContent.trim()) {
+          goCode = `${existingContent.trim()}\n\n`;
+        } else {
+          goCode = `package domain\n\n`;
+        }
+      }
+    } else {
+      goCode = `package domain\n\n`;
+    }
+
+    // Add separator comment
+    goCode += `// --- Generated by typespec ---\n\n`;
+
+    // Add generated models
+    for (const model of models) {
+      goCode += this.emitModel(model);
+    }
+
+    fs.writeFileSync(outputPath, goCode);
+  }
+
+  private emitModel(model: Model): string {
+    const modelName = model.name;
+    const doc = getDoc(this.program, model);
+
+    let code = "";
+
+    // Add model comment
+    if (doc) {
+      code += `// ${modelName} ${doc}\n`;
+    } else {
+      code += `// ${modelName} represents the ${modelName.toLowerCase()} data structure\n`;
+    }
+
+    code += `type ${modelName} struct {\n`;
+
+    // Add fields
+    for (const [propName, prop] of model.properties) {
+      code += this.emitModelProperty(prop);
+    }
+
+    code += `}\n\n`;
+
+    return code;
+  }
+
+  private emitModelProperty(prop: ModelProperty): string {
+    const propDoc = getDoc(this.program, prop);
+    const fieldName = this.toPascalCase(prop.name);
+    // Check if property is optional or has nullable type
+    const isNullable = prop.optional || this.isPropertyNullable(prop);
+    const goType = this.typeToGoType(prop.type, isNullable);
+    const jsonTag = `json:"${prop.name}"`;
+
+    let code = "";
+
+    code += `\t${fieldName} ${goType} \`${jsonTag}\`\n`;
+
+    return code;
+  }
+
+  private isPropertyNullable(prop: ModelProperty): boolean {
+    return prop.type.kind === "Union" && this.isNullableUnion(prop.type);
+  }
+
+  private emitHandlers() {
+    for (const [fileName, data] of this.operationsByFile) {
+      // Check if file should be generated (has configurable generate comment)
+      const sourceFiles = this.program.sourceFiles;
+      let shouldGenerate = false;
+      const generateComment = this.options["generate-comment"] || "//!Generate";
+
+      for (const [filePath, sourceFile] of sourceFiles) {
+        if (filePath.includes(`/routes/${fileName}.tsp`)) {
+          const fileContent = fs.readFileSync(filePath, "utf8");
+          // Escape special regex characters and create pattern
+          const escapedComment = generateComment.replace(
+            /[.*+?^${}()|[\]\\]/g,
+            "\\$&"
+          );
+          const pattern = new RegExp(
+            escapedComment.replace(/\s+/g, "\\s*"),
+            "i"
+          );
+          shouldGenerate = pattern.test(fileContent);
+          break;
+        }
+      }
+
+      if (shouldGenerate) {
+        this.emitHandlerFile(data.operations, data.models, fileName);
+      }
+    }
+  }
+
+  private emitHandlerFile(
+    operations: Operation[],
+    models: Model[],
+    fileName: string
+  ) {
+    let goCode = `package http\n\n`;
+
+    // Emit handler functions (no separate request structs since we use inline)
+    for (const operation of operations) {
+      goCode += this.emitHandler(operation);
+    }
+
+    // Handle file writing based on whether file exists
+    const outputPath = path.join(
+      this.handlerOutputDir,
+      `${fileName}.handler.go`
+    );
+
+    if (fs.existsSync(outputPath)) {
+      // Append new handlers to existing file
+      const existingContent = fs.readFileSync(outputPath, "utf8");
+      const newContent =
+        existingContent + "\n" + goCode.replace("package http\n\n", "");
+      fs.writeFileSync(outputPath, newContent);
+    } else {
+      // Create new file
+      fs.writeFileSync(outputPath, goCode);
+    }
+  }
+
+  private emitHandler(operation: Operation): string {
+    const operationName = operation.name;
+    const doc = getDoc(this.program, operation);
+
+    let code = "";
+
+    // Add operation comment
+    if (doc) {
+      code += `// ${operationName} ${doc}\n`;
+    } else {
+      code += `// ${operationName} handles the ${operationName.toLowerCase()} operation\n`;
+    }
+
+    // Check for authentication requirements
+    const authInfo = this.getAuthenticationInfo(operation);
+    if (authInfo) {
+      code += `// Authentication: ${authInfo}\n`;
+    }
+
+    // Add query and path parameters comment
+    const parameterComments = this.getParameterComments(operation);
+    if (parameterComments.length > 0) {
+      code += parameterComments.join("");
+    }
+
+    // Add response comment
+    code += `// Response: Expected response type based on operation definition\n`;
+
+    code += `func (h *Handler) ${operationName}(c *gin.Context) {\n`;
+
+    // Generate path and query parameter variables (commented)
+    const paramVariables = this.generateParameterVariables(operation);
+    if (paramVariables.length > 0) {
+      code += paramVariables.join("");
+    }
+
+    // Generate request body struct if operation has body
+    const requestStruct = this.generateRequestStructInline(operation);
+    if (requestStruct) {
+      code += requestStruct;
+    }
+
+    code += `\t// TODO: Implement your handler logic for ${operationName} here 🚀 (by Muhammad Refy) \n`;
+    code += `\tc.JSON(200, gin.H{"message": "Not implemented"})\n`;
+    code += `}\n\n`;
+
+    return code;
+  }
+
+  private buildValidationTags(prop: ModelProperty): string {
+    // Use the detailed validation tags method
+    return this.buildValidationTagsDetailed(prop);
+  }
+
+  private typeToGoType(type: Type, supportNull: boolean = false): string {
+    switch (type.kind) {
+      case "Scalar":
+        return this.scalarToGoType(type.name, supportNull);
+      case "Model":
+        if (type.name === "Array" && type.indexer) {
+          const elementType = this.typeToGoType(
+            type.indexer.value,
+            supportNull
+          );
+          return `[]${elementType}`;
+        }
+        // For model types that can be null, use pointer
+        if (supportNull) {
+          return `*${type.name}`;
+        }
+        return type.name;
+      case "Union":
+        // Handle nullable types
+        if (this.isNullableUnion(type)) {
+          const nonNullType = this.getNonNullTypeFromUnion(type);
+          if (nonNullType) {
+            return this.typeToGoType(nonNullType, true);
+          }
+        }
+        return "interface{}";
+      default:
+        return "interface{}";
+    }
+  }
+
+  private scalarToGoType(scalarName: string, supportNull: boolean): string {
+    const mapping: Record<string, string> = {
+      string: supportNull ? "null.String" : "string",
+      int32: supportNull ? "null.Int" : "int32",
+      int64: supportNull ? "null.Int" : "int64",
+      float32: supportNull ? "null.Float" : "float32",
+      float64: supportNull ? "null.Float" : "float64",
+      boolean: supportNull ? "null.Bool" : "bool",
+      utcDateTime: supportNull ? "null.Time" : "time.Time",
+    };
+
+    return mapping[scalarName] || (supportNull ? "null.String" : "string");
+  }
+
+  private isNullableUnion(type: Type): boolean {
+    if (type.kind !== "Union") return false;
+
+    // Check if union contains null/void type
+    for (const variant of type.variants.values()) {
+      if (
+        variant.type.kind === "Intrinsic" &&
+        (variant.type.name === "null" || variant.type.name === "void")
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private getNonNullTypeFromUnion(type: Type): Type | null {
+    if (type.kind !== "Union") return null;
+
+    // Return the non-null type from union
+    for (const variant of type.variants.values()) {
+      if (
+        variant.type.kind !== "Intrinsic" ||
+        (variant.type.name !== "null" && variant.type.name !== "void")
+      ) {
+        return variant.type;
+      }
+    }
+    return null;
+  }
+
+  private toPascalCase(str: string): string {
+    return str
+      .split("_")
+      .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+      .join("");
+  }
+
+  private getAuthenticationInfo(operation: Operation): string | null {
+    // Check decorators on the operation for @useAuth
+    if (operation.decorators) {
+      for (const decorator of operation.decorators) {
+        if (
+          decorator.decorator &&
+          (decorator.decorator.name === "useAuth" ||
+            decorator.decorator.name === "$useAuth")
+        ) {
+          // Get the auth type from decorator arguments
+          if (decorator.args && decorator.args.length > 0) {
+            const authArg = decorator.args[0];
+
+            // Extract auth type name from argument value
+            if (authArg.value && (authArg.value as any).name) {
+              const authName = (authArg.value as any).name;
+              switch (authName) {
+                case "BearerAuth":
+                  return "Required Bearer Token authentication";
+                case "BasicAuth":
+                  return "Required Basic authentication";
+                case "ApiKeyAuth":
+                  return "Required API Key authentication";
+                default:
+                  return `Required ${authName} authentication`;
+              }
+            }
+          }
+          return "Required authentication";
+        }
+      }
+    }
+    return null;
+  }
+
+  private getParameterComments(operation: Operation): string[] {
+    const comments: string[] = [];
+
+    // Check for path parameters
+    const pathParams = this.getPathParameters(operation);
+    if (pathParams.length > 0) {
+      comments.push(`// Path parameters:\n`);
+      for (const param of pathParams) {
+        const paramDoc = getDoc(this.program, param.property);
+        comments.push(`// - ${param.name}: ${paramDoc || "path parameter"}\n`);
+      }
+    }
+
+    // Check for query parameters
+    const queryParams = this.getQueryParameters(operation);
+    if (queryParams.length > 0) {
+      comments.push(`// Query parameters:\n`);
+      for (const param of queryParams) {
+        const paramDoc = getDoc(this.program, param.property);
+        comments.push(`// - ${param.name}: ${paramDoc || "query parameter"}\n`);
+      }
+    }
+
+    return comments;
+  }
+
+  private generateParameterVariables(operation: Operation): string[] {
+    const variables: string[] = [];
+
+    // Generate path parameter variables (commented)
+    const pathParams = this.getPathParameters(operation);
+    for (const param of pathParams) {
+      const goType = this.typeToGoType(param.property.type, false);
+      variables.push(
+        `\t// ${param.name} := c.Param("${param.name}") // ${goType}\n`
+      );
+    }
+
+    // Generate query parameter variables (commented)
+    const queryParams = this.getQueryParameters(operation);
+    for (const param of queryParams) {
+      const goType = this.typeToGoType(param.property.type, false);
+      variables.push(
+        `\t// ${param.name} := c.DefaultQuery("${param.name}", "") // ${goType}\n`
+      );
+    }
+
+    if (variables.length > 0) {
+      variables.push(`\n`);
+    }
+
+    return variables;
+  }
+
+  private generateRequestStructInline(operation: Operation): string | null {
+    const bodyParam = this.getBodyParameter(operation);
+    if (!bodyParam) {
+      return null;
+    }
+
+    const bodyType = bodyParam.property.type;
+    if (bodyType.kind !== "Model") {
+      return null;
+    }
+
+    const isMultipart = this.isMultipartRequest(operation);
+    let code = `\t// var request struct {\n`;
+
+    // Generate struct fields
+    for (const [propName, prop] of bodyType.properties) {
+      code += this.generateInlineStructField(prop, isMultipart, true);
+    }
+
+    code += `\t// }\n\n`;
+
+    return code;
+  }
+
+  private generateInlineStructField(
+    prop: ModelProperty,
+    isMultipart: boolean,
+    isCommented: boolean = false
+  ): string {
+    const fieldName = this.toPascalCase(prop.name);
+    const isNullable = prop.optional || this.isPropertyNullable(prop);
+    const commentPrefix = isCommented ? "\t// " : "\t\t";
+
+    // Handle array of nested models specially
+    if (
+      prop.type.kind === "Model" &&
+      prop.type.name === "Array" &&
+      prop.type.indexer
+    ) {
+      const elementType = prop.type.indexer.value;
+      if (elementType.kind === "Model" && elementType.properties) {
+        // Generate inline anonymous struct for array elements
+        let structCode = `${commentPrefix}${fieldName} []struct {\n`;
+
+        // Generate fields for the nested struct
+        for (const [nestedPropName, nestedProp] of elementType.properties) {
+          const nestedFieldName = this.toPascalCase(nestedPropName);
+          const nestedIsNullable =
+            nestedProp.optional || this.isPropertyNullable(nestedProp);
+          const nestedGoType = this.typeToGoRequestType(
+            nestedProp.type,
+            nestedIsNullable
+          );
+
+          // Build tags for nested field
+          const jsonTag = `json:"${nestedPropName}"`;
+          const formTag = isMultipart ? ` form:"${nestedPropName}"` : "";
+          const validationTags = this.buildValidationTagsDetailed(nestedProp);
+          const bindingTag = validationTags
+            ? ` binding:"${validationTags}"`
+            : "";
+          const allTags = `\`${jsonTag}${formTag}${bindingTag}\``;
+
+          structCode += `${commentPrefix}\t${nestedFieldName} ${nestedGoType} ${allTags}\n`;
+        }
+
+        // Build validation tags for the array field
+        const validationTags = this.buildValidationTagsDetailed(prop);
+        const arrayJsonTag = `json:"${prop.name}"`;
+        const arrayFormTag = isMultipart ? ` form:"${prop.name}"` : "";
+        const arrayBindingTag = validationTags
+          ? ` binding:"${validationTags}"`
+          : "";
+        const arrayTags = `\`${arrayJsonTag}${arrayFormTag}${arrayBindingTag}\``;
+
+        structCode += `${commentPrefix}} ${arrayTags}\n`;
+        return structCode;
+      }
+    }
+
+    // Handle regular fields
+    const goType = this.typeToGoRequestType(prop.type, isNullable);
+
+    // Build tags
+    const jsonTag = `json:"${prop.name}"`;
+    const formTag = isMultipart ? ` form:"${prop.name}"` : "";
+
+    // Build validation tags
+    const validationTags = this.buildValidationTagsDetailed(prop);
+    const bindingTag = validationTags ? ` binding:"${validationTags}"` : "";
+
+    const allTags = `\`${jsonTag}${formTag}${bindingTag}\``;
+
+    return `${commentPrefix}${fieldName} ${goType} ${allTags}\n`;
+  }
+
+  private buildValidationTagsDetailed(prop: ModelProperty): string {
+    const tags: string[] = [];
+
+    // Check if required (non-optional)
+    if (!prop.optional) {
+      tags.push("required");
+    }
+
+    // Check for decorators on the property
+    if (prop.decorators) {
+      for (const decorator of prop.decorators) {
+        const decoratorName = decorator.decorator?.name;
+
+        switch (decoratorName) {
+          case "minLength":
+          case "$minLength":
+            if (decorator.args && decorator.args.length > 0) {
+              // For now, just add a fixed value until we figure out the structure
+              tags.push(`min=11`);
+            }
+            break;
+          case "maxLength":
+          case "$maxLength":
+            if (decorator.args && decorator.args.length > 0) {
+              // For now, just add a fixed value until we figure out the structure
+              tags.push(`max=100`);
+            }
+            break;
+          case "minItems":
+          case "$minItems":
+            if (decorator.args && decorator.args.length > 0) {
+              // For now, just add a fixed value until we figure out the structure
+              tags.push(`min=1`);
+            }
+            break;
+          case "maxItems":
+          case "$maxItems":
+            if (decorator.args && decorator.args.length > 0) {
+              // For now, just add a fixed value until we figure out the structure
+              tags.push(`max=10`);
+            }
+            break;
+        }
+      }
+    }
+
+    // Handle nested struct validation for arrays
+    if (prop.type.kind === "Model" && prop.type.name === "Array") {
+      tags.push("dive");
+      if (!prop.optional) {
+        tags.push("required");
+      }
+    }
+
+    return tags.join(",");
+  }
+
+  private typeToGoRequestType(type: Type, isNullable: boolean): string {
+    switch (type.kind) {
+      case "Scalar":
+        return this.scalarToGoRequestType(type.name, isNullable);
+      case "Model":
+        if (type.name === "Array" && type.indexer) {
+          const elementType = this.typeToGoRequestType(
+            type.indexer.value,
+            false
+          );
+          return `[]${elementType}`;
+        }
+        // For model types that can be null, use pointer
+        if (isNullable) {
+          return `*${type.name}`;
+        }
+        return type.name;
+      case "Union":
+        // Handle nullable types
+        if (this.isNullableUnion(type)) {
+          const nonNullType = this.getNonNullTypeFromUnion(type);
+          if (nonNullType) {
+            return this.typeToGoRequestType(nonNullType, true);
+          }
+        }
+        return "interface{}";
+      default:
+        return "interface{}";
+    }
+  }
+
+  private scalarToGoRequestType(
+    scalarName: string,
+    isNullable: boolean
+  ): string {
+    if (isNullable) {
+      const mapping: Record<string, string> = {
+        string: "null.String",
+        int32: "null.Int",
+        int64: "null.Int",
+        float32: "null.Float",
+        float64: "null.Float",
+        boolean: "null.Bool",
+        utcDateTime: "null.Time",
+      };
+      return mapping[scalarName] || "null.String";
+    } else {
+      const mapping: Record<string, string> = {
+        string: "string",
+        int32: "int32",
+        int64: "int64",
+        float32: "float32",
+        float64: "float64",
+        boolean: "bool",
+        utcDateTime: "time.Time",
+      };
+      return mapping[scalarName] || "string";
+    }
+  }
+
+  private getPathParameters(
+    operation: Operation
+  ): Array<{ name: string; property: ModelProperty }> {
+    const pathParams: Array<{ name: string; property: ModelProperty }> = [];
+
+    if (operation.parameters) {
+      for (const [paramName, param] of operation.parameters.properties) {
+        // Check if parameter has @path decorator (looking for $path)
+        if (param.decorators) {
+          for (const decorator of param.decorators) {
+            if (
+              decorator.decorator?.name === "$path" ||
+              decorator.decorator?.name === "path"
+            ) {
+              pathParams.push({ name: paramName, property: param });
+              break;
+            }
+          }
+        }
+      }
+    }
+
+    return pathParams;
+  }
+
+  private getQueryParameters(
+    operation: Operation
+  ): Array<{ name: string; property: ModelProperty }> {
+    const queryParams: Array<{ name: string; property: ModelProperty }> = [];
+
+    if (operation.parameters) {
+      for (const [paramName, param] of operation.parameters.properties) {
+        // Check if parameter has @query decorator (looking for $query)
+        if (param.decorators) {
+          for (const decorator of param.decorators) {
+            if (
+              decorator.decorator?.name === "$query" ||
+              decorator.decorator?.name === "query"
+            ) {
+              queryParams.push({ name: paramName, property: param });
+              break;
+            }
+          }
+        }
+      }
+    }
+
+    return queryParams;
+  }
+
+  private getBodyParameter(
+    operation: Operation
+  ): { name: string; property: ModelProperty } | null {
+    if (operation.parameters) {
+      for (const [paramName, param] of operation.parameters.properties) {
+        // Check if parameter has @body decorator (looking for $body)
+        if (param.decorators) {
+          for (const decorator of param.decorators) {
+            if (
+              decorator.decorator?.name === "$body" ||
+              decorator.decorator?.name === "body"
+            ) {
+              return { name: paramName, property: param };
+            }
+          }
+        }
+      }
+    }
+
+    return null;
+  }
+
+  private isMultipartRequest(operation: Operation): boolean {
+    // Check if operation has multipart content type
+    // This is a simplified check - you might want to enhance this
+    // based on your TypeSpec schema or decorators
+    return false; // Default to false, enhance as needed
+  }
+}

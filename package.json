@@ -1,0 +1,55 @@
+{
+  "name": "typespec-domaingin-emitter",
+  "version": "1.0.0",
+  "description": "TypeSpec emitter that generates Go domain logic and Gin (github.com/gin-gonic/gin) HTTP handlers following my own project structure and coding standards.",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch",
+    "clean": "rm -rf dist",
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "prepublishOnly": "npm run clean && npm run build"
+  },
+  "keywords": [
+    "typespec",
+    "go",
+    "golang",
+    "emitter",
+    "gin",
+    "http",
+    "handler",
+    "struct",
+    "domain",
+    "models",
+    "api",
+    "generator",
+    "code-generation"
+  ],
+  "author": "Muhammad Refy <refi.bahar@gmail.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/murbagus/typespec-domaingin-emitter.git"
+  },
+  "bugs": {
+    "url": "https://github.com/murbagus/typespec-domaingin-emitter/issues"
+  },
+  "homepage": "https://github.com/murbagus/typespec-domaingin-emitter#readme",
+  "dependencies": {
+    "@typespec/compiler": "^1.2.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0",
+    "@types/node": "^20.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "files": [
+    "dist/**/*",
+    "README.md",
+    "LICENSE"
+  ],
+  "tspMain": "dist/index.js"
+}
