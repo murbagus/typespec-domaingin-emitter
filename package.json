@@ -1,5 +1,5 @@
 {
-  "name": "typespec-domaingin-emitter",
+  "name": "@murbagus/typespec-domaingin-emitter",
   "version": "1.0.0",
   "description": "TypeSpec emitter that generates Go domain logic and Gin (github.com/gin-gonic/gin) HTTP handlers following my own project structure and coding standards.",
   "type": "module",
