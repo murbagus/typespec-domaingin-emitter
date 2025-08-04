@@ -6,8 +6,6 @@ using Http;
 namespace MyAPI;
 
 // Test case 1: Namespace dengan @domainGinHandlerGen dan @domainGinHandlerName
-// Note: Red highlights in VS Code are normal for custom decorators - they still work correctly
-@domainGinHandlerGen
 @domainGinHandlerName("UserHandler")
 @route("/users")
 @tag("Users")
@@ -29,6 +27,7 @@ namespace UserAPI {
         @body user: User;
     };
 
+    @domainGinHandlerGen
     @get
     op ListUsers(): {
         @statusCode statusCode: 200;

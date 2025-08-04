@@ -321,6 +321,8 @@ class GoEmitter {
         // Even if namespace has decorator, operation-level takes precedence
         shouldGenerate = true;
         operationsToGenerate = Array.from(data.operationsWithDecorator);
+        // For each operation, we need to find its specific namespace during emission
+        // Don't set targetNamespace here as operations may be in different namespaces
       } else if (namespaceHasDecorator) {
         // If namespace has @domainGinHandlerGen and no operations have it, generate all operations
         shouldGenerate = true;
@@ -358,7 +360,8 @@ class GoEmitter {
           operationsToGenerate,
           data.models,
           fileName,
-          targetNamespace
+          targetNamespace,
+          data.namespaces // Pass all namespaces for operation-specific lookup
         );
       }
     }
@@ -368,13 +371,23 @@ class GoEmitter {
     operations: Operation[],
     models: Model[],
     fileName: string,
-    namespace?: Namespace
+    namespace?: Namespace,
+    allNamespaces?: Namespace[]
   ) {
     let goCode = `package http\n\n`;
 
     // Emit handler functions (no separate request structs since we use inline)
     for (const operation of operations) {
-      goCode += this.emitHandler(operation, namespace);
+      // Find the specific namespace for this operation
+      let operationNamespace = namespace;
+      if (allNamespaces && !namespace) {
+        // Find the namespace that contains this operation
+        operationNamespace = this.findNamespaceForOperation(
+          operation,
+          allNamespaces
+        );
+      }
+      goCode += this.emitHandler(operation, operationNamespace);
     }
 
     // Handle file writing based on whether file exists
@@ -393,6 +406,19 @@ class GoEmitter {
       // Create new file
       fs.writeFileSync(outputPath, goCode);
     }
+  }
+
+  private findNamespaceForOperation(
+    operation: Operation,
+    namespaces: Namespace[]
+  ): Namespace | undefined {
+    // Find the namespace that contains this operation by checking operation's namespace
+    const operationNamespace = operation.namespace;
+    if (operationNamespace) {
+      // Find matching namespace from our collected namespaces
+      return namespaces.find((ns) => ns.name === operationNamespace.name);
+    }
+    return undefined;
   }
 
   private emitHandler(operation: Operation, namespace?: Namespace): string {
