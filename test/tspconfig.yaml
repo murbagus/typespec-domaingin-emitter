@@ -1,0 +1,6 @@
+emit:
+  - "@murbagus/typespec-domaingin-emitter"
+options:
+  "@murbagus/typespec-domaingin-emitter":
+    emitter-output-dir: "{project-root}/domain"
+    handler-output-dir: "{project-root}/handlers"

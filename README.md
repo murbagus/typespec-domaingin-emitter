@@ -26,9 +26,12 @@ A TypeSpec emitter that generates Go structs and HTTP handlers specifically desi
 - **Commented request variables** for safety and flexibility
 - Clean template-based generation without binding code clutter
 
-🎯 **Smart Generation Control**
+🎯 **Smart Generation Control** (New in v2.0)
 
-- Configurable generation trigger comments
+- **Decorator-based generation control** with `@domainGinHandlerGen`
+- **Custom handler names** with `@domainGinHandlerName("CustomHandler")`
+- **Namespace-level or operation-level generation**
+- Backward compatible comment-based generation
 - Selective file regeneration
 - Incremental updates without losing existing code
 - Support for multipart/form-data requests
@@ -51,25 +54,25 @@ npm install @typespec/compiler @typespec/http @murbagus/typespec-domaingin-emitt
 
 ```yaml
 emit:
-  - "typespec-domaingin-emitter"
+  - "@murbagus/typespec-domaingin-emitter"
 options:
-  "typespec-domaingin-emitter":
-    emitter-output-dir: "./models"
-    handler-output-dir: "./handlers"
-    generate-comment: "//!Generate"
+  "@murbagus/typespec-domaingin-emitter":
+    emitter-output-dir: "{project-root}/domain"
+    handler-output-dir: "{project-root}/handlers"
 ```
 
-3. **Mark TypeSpec files for generation**:
+3. **Use decorators for generation control**:
 
 ```typespec
 // routes/users.tsp
 import "@typespec/http";
+import "@murbagus/typespec-domaingin-emitter";
 
 using Http;
 
-namespace MyAPI;
-
-//!Generate
+// Generate all operations in this namespace with custom handler name
+@domainGinHandlerGen
+@domainGinHandlerName("UserHandler")
 @route("/users")
 @tag("Users")
 namespace UserAPI {
@@ -89,6 +92,31 @@ namespace UserAPI {
         @statusCode statusCode: 201;
         @body user: User;
     };
+
+    @get
+    op ListUsers(): {
+        @statusCode statusCode: 200;
+        @body users: User[];
+    };
+}
+
+// Only generate specific operations
+@route("/auth")
+namespace AuthAPI {
+    @post
+    @domainGinHandlerGen
+    @domainGinHandlerName("AuthHandler")
+    op Login(@body request: LoginRequest): {
+        @statusCode statusCode: 200;
+        @body token: string;
+    };
+
+    // This operation won't be generated (no decorator)
+    @post
+    op Register(@body request: RegisterRequest): {
+        @statusCode statusCode: 201;
+        @body user: User;
+    };
 }
 ```
 
@@ -100,33 +128,16 @@ npx tsp compile .
 
 ## Generated Output
 
-### Domain Models
+### Namespace-Level Generation
 
-From `models/user.tsp`:
-
-```go
-package domain
-
-// User represents the user data structure
-type User struct {
-    ID       int32       `json:"id"`
-    Name     string      `json:"name"`
-    Email    null.String `json:"email"`
-    IsActive bool        `json:"is_active"`
-}
-```
-
-### HTTP Handlers
-
-From `routes/users.tsp`:
+From the example above, `UserAPI` namespace will generate:
 
 ```go
 package http
 
-// CreateUser Creates a new user
-// Authentication: Required Bearer Token authentication
+// CreateUser handles the createuser operation
 // Response: Expected response type based on operation definition
-func (h *Handler) CreateUser(c *gin.Context) {
+func (h *UserHandler) CreateUser(c *gin.Context) {
     // var request struct {
     //     Name     string      `json:"name" binding:"required,max=100"`
     //     Username string      `json:"username" binding:"required,min=3,max=50"`
@@ -135,6 +146,170 @@ func (h *Handler) CreateUser(c *gin.Context) {
 
     // TODO: Implement your handler logic for CreateUser here 🚀 (by Muhammad Refy)
     c.JSON(200, gin.H{"message": "Not implemented"})
+}
+
+// ListUsers handles the listusers operation
+// Response: Expected response type based on operation definition
+func (h *UserHandler) ListUsers(c *gin.Context) {
+    // TODO: Implement your handler logic for ListUsers here 🚀 (by Muhammad Refy)
+    c.JSON(200, gin.H{"message": "Not implemented"})
+}
+```
+
+### Operation-Level Generation
+
+Only the `Login` operation will be generated:
+
+```go
+package http
+
+// Login handles the login operation
+// Response: Expected response type based on operation definition
+func (h *AuthHandler) Login(c *gin.Context) {
+    // var request struct {
+    //     Username string `json:"username" binding:"required"`
+    //     Password string `json:"password" binding:"required"`
+    // }
+
+    // TODO: Implement your handler logic for Login here 🚀 (by Muhammad Refy)
+    c.JSON(200, gin.H{"message": "Not implemented"})
+}
+```
+
+## Decorator-Based Generation Control (v2.0)
+
+The v2.0 introduces powerful decorator-based generation control that provides more flexibility than comment-based generation.
+
+### Available Decorators
+
+#### `@domainGinHandlerGen`
+
+Marks a namespace or operation for handler generation.
+
+**Namespace-level usage:**
+
+```typespec
+@domainGinHandlerGen
+@route("/users")
+namespace UserAPI {
+    // All operations in this namespace will be generated
+    @post op CreateUser(...): ...;
+    @get op ListUsers(...): ...;
+}
+```
+
+**Operation-level usage:**
+
+```typespec
+@route("/auth")
+namespace AuthAPI {
+    @domainGinHandlerGen
+    @post op Login(...): ...;  // Only this operation will be generated
+
+    @post op Register(...): ...; // This will NOT be generated
+}
+```
+
+#### `@domainGinHandlerName("HandlerName")`
+
+Specifies the custom handler struct name for generated functions.
+
+**Examples:**
+
+```typespec
+// Generates: func (h *UserHandler) CreateUser(c *gin.Context)
+@domainGinHandlerGen
+@domainGinHandlerName("UserHandler")
+namespace UserAPI {
+    @post op CreateUser(...): ...;
+}
+
+// Generates: func (h *AuthHandler) Login(c *gin.Context)
+@post
+@domainGinHandlerGen
+@domainGinHandlerName("AuthHandler")
+op Login(...): ...;
+```
+
+### Generation Precedence
+
+The emitter follows this priority order:
+
+1. **Operation-level decorators** (highest priority)
+
+   - If any operation has `@domainGinHandlerGen`, only those operations are generated
+   - Namespace-level decorators are ignored when operation-level decorators exist
+
+2. **Namespace-level decorators** (medium priority)
+
+   - If namespace has `@domainGinHandlerGen` and no operations have decorators, all operations in namespace are generated
+
+3. **Comment-based generation** (lowest priority - backward compatibility)
+   - Falls back to `//!Generate` comment or configured `generate-comment` option
+
+### Examples
+
+#### Mixed Usage Example
+
+```typespec
+import "@typespec/http";
+import "@murbagus/typespec-domaingin-emitter";
+
+using Http;
+
+// Namespace with decorator - generates ALL operations with UserHandler
+@domainGinHandlerGen
+@domainGinHandlerName("UserHandler")
+@route("/users")
+namespace UserAPI {
+    @post op CreateUser(@body request: CreateUserRequest): User;
+    @get op GetUser(@path id: int32): User;
+    @put op UpdateUser(@path id: int32, @body request: UpdateUserRequest): User;
+    @delete op DeleteUser(@path id: int32): void;
+}
+
+// Mixed namespace - only Login is generated because of operation-level decorator
+@route("/auth")
+namespace AuthAPI {
+    @post
+    @domainGinHandlerGen
+    @domainGinHandlerName("AuthHandler")
+    op Login(@body request: LoginRequest): LoginResponse;
+
+    @post
+    op Register(@body request: RegisterRequest): User; // NOT generated
+
+    @post
+    op ForgotPassword(@body request: ForgotPasswordRequest): void; // NOT generated
+}
+
+// Legacy comment-based generation (still supported)
+//!Generate
+@route("/products")
+namespace ProductAPI {
+    @post op CreateProduct(@body request: ProductRequest): Product;
+    @get op ListProducts(): Product[];
+}
+```
+
+#### Handler Name Priority
+
+Handler names are resolved in this order:
+
+1. **Operation-level** `@domainGinHandlerName` (highest priority)
+2. **Namespace-level** `@domainGinHandlerName`
+3. **Default** `Handler` (fallback)
+
+```typespec
+@domainGinHandlerName("UserService")  // Namespace-level name
+@route("/users")
+namespace UserAPI {
+    @post
+    @domainGinHandlerName("UserController")  // Operation-level name (takes precedence)
+    op CreateUser(...): ...;  // Generated as: func (h *UserController) CreateUser(...)
+
+    @get
+    op GetUser(...): ...;     // Generated as: func (h *UserService) GetUser(...)
 }
 ```
 

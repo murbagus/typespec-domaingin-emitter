@@ -1,0 +1,9 @@
+{
+  "name": "test-typespec-domaingin",
+  "version": "1.0.0",
+  "dependencies": {
+    "@murbagus/typespec-domaingin-emitter": "file:..",
+    "@typespec/compiler": "^1.2.0",
+    "@typespec/http": "^1.2.0"
+  }
+}

@@ -2,6 +2,7 @@ import {
   EmitContext,
   Model,
   ModelProperty,
+  Namespace,
   Operation,
   Program,
   Type,
@@ -12,6 +13,10 @@ import {
 } from "@typespec/compiler";
 import * as fs from "fs";
 import * as path from "path";
+import {
+  getDomainGinHandlerName,
+  isDomainGinHandlerGen,
+} from "./decorators.js";
 
 export interface GoEmitterOptions {
   "emitter-output-dir"?: string;
@@ -48,7 +53,12 @@ class GoEmitter {
   private modelsByFile = new Map<string, Model[]>();
   private operationsByFile = new Map<
     string,
-    { operations: Operation[]; models: Model[] }
+    {
+      operations: Operation[];
+      models: Model[];
+      namespaces: Namespace[];
+      operationsWithDecorator: Set<Operation>;
+    }
   >();
 
   constructor(
@@ -59,15 +69,29 @@ class GoEmitter {
     this.options = options;
     this.program = context.program;
 
-    // Get the correct paths relative to the project root
-    // this.outputDir = path.resolve("../application/domain");
-    // this.handlerOutputDir = path.resolve("../drivers/delivery/http");
-    this.outputDir = path.resolve(
-      options["emitter-output-dir"] || "../application/domain"
-    );
-    this.handlerOutputDir = path.resolve(
-      options["handler-output-dir"] || "../drivers/delivery/http"
-    );
+    // Use the exact paths from tspconfig.yaml, TypeSpec already resolved {project-root}
+    // If paths are absolute (resolved by TypeSpec), use them directly
+    // Otherwise use context.emitterOutputDir as base
+    if (
+      options["emitter-output-dir"] &&
+      path.isAbsolute(options["emitter-output-dir"])
+    ) {
+      this.outputDir = options["emitter-output-dir"];
+    } else {
+      this.outputDir = context.emitterOutputDir;
+    }
+
+    if (
+      options["handler-output-dir"] &&
+      path.isAbsolute(options["handler-output-dir"])
+    ) {
+      this.handlerOutputDir = options["handler-output-dir"];
+    } else {
+      this.handlerOutputDir = path.resolve(
+        context.emitterOutputDir,
+        "../handlers"
+      );
+    }
   }
 
   emitProgram() {
@@ -114,6 +138,8 @@ class GoEmitter {
               this.operationsByFile.set(fileName, {
                 operations: [],
                 models: [],
+                namespaces: [],
+                operationsWithDecorator: new Set(),
               });
             }
 
@@ -128,16 +154,46 @@ class GoEmitter {
           }
         }
       },
+      namespace: (namespace) => {
+        const sourceFile = getSourceLocation(namespace)?.file;
+        if (sourceFile && sourceFile.path.includes("/routes/")) {
+          const fileName = path.basename(sourceFile.path, ".tsp");
+
+          if (!this.operationsByFile.has(fileName)) {
+            this.operationsByFile.set(fileName, {
+              operations: [],
+              models: [],
+              namespaces: [],
+              operationsWithDecorator: new Set(),
+            });
+          }
+
+          // Store namespace for decorator checking
+          this.operationsByFile.get(fileName)!.namespaces.push(namespace);
+        }
+      },
       operation: (operation) => {
         const sourceFile = getSourceLocation(operation)?.file;
         if (sourceFile && sourceFile.path.includes("/routes/")) {
           const fileName = path.basename(sourceFile.path, ".tsp");
 
           if (!this.operationsByFile.has(fileName)) {
-            this.operationsByFile.set(fileName, { operations: [], models: [] });
+            this.operationsByFile.set(fileName, {
+              operations: [],
+              models: [],
+              namespaces: [],
+              operationsWithDecorator: new Set(),
+            });
           }
 
           this.operationsByFile.get(fileName)?.operations.push(operation);
+
+          // Check if operation has @domainGinHandlerGen decorator
+          if (isDomainGinHandlerGen(this.program, operation)) {
+            this.operationsByFile
+              .get(fileName)
+              ?.operationsWithDecorator.add(operation);
+          }
         }
       },
     });
@@ -247,30 +303,63 @@ class GoEmitter {
 
   private emitHandlers() {
     for (const [fileName, data] of this.operationsByFile) {
-      // Check if file should be generated (has configurable generate comment)
-      const sourceFiles = this.program.sourceFiles;
-      let shouldGenerate = false;
-      const generateComment = this.options["generate-comment"] || "//!Generate";
+      // Find namespace with @domainGinHandlerGen decorator
+      const namespaceWithDecorator = data.namespaces.find((ns) =>
+        isDomainGinHandlerGen(this.program, ns)
+      );
 
-      for (const [filePath, sourceFile] of sourceFiles) {
-        if (filePath.includes(`/routes/${fileName}.tsp`)) {
-          const fileContent = fs.readFileSync(filePath, "utf8");
-          // Escape special regex characters and create pattern
-          const escapedComment = generateComment.replace(
-            /[.*+?^${}()|[\]\\]/g,
-            "\\$&"
-          );
-          const pattern = new RegExp(
-            escapedComment.replace(/\s+/g, "\\s*"),
-            "i"
-          );
-          shouldGenerate = pattern.test(fileContent);
-          break;
+      let shouldGenerate = false;
+      let operationsToGenerate: Operation[] = [];
+      let targetNamespace: Namespace | undefined;
+
+      // Check for @domainGinHandlerGen decorator usage
+      const namespaceHasDecorator = !!namespaceWithDecorator;
+      const hasOperationDecorators = data.operationsWithDecorator.size > 0;
+
+      if (hasOperationDecorators) {
+        // If any operation has @domainGinHandlerGen, only generate those operations
+        // Even if namespace has decorator, operation-level takes precedence
+        shouldGenerate = true;
+        operationsToGenerate = Array.from(data.operationsWithDecorator);
+      } else if (namespaceHasDecorator) {
+        // If namespace has @domainGinHandlerGen and no operations have it, generate all operations
+        shouldGenerate = true;
+        operationsToGenerate = data.operations;
+        targetNamespace = namespaceWithDecorator;
+      } else {
+        // Fall back to old comment-based generation
+        const sourceFiles = this.program.sourceFiles;
+        const generateComment =
+          this.options["generate-comment"] || "//!Generate";
+
+        for (const [filePath, sourceFile] of sourceFiles) {
+          if (filePath.includes(`/routes/${fileName}.tsp`)) {
+            const fileContent = fs.readFileSync(filePath, "utf8");
+            // Escape special regex characters and create pattern
+            const escapedComment = generateComment.replace(
+              /[.*+?^${}()|[\]\\]/g,
+              "\\$&"
+            );
+            const pattern = new RegExp(
+              escapedComment.replace(/\s+/g, "\\s*"),
+              "i"
+            );
+            shouldGenerate = pattern.test(fileContent);
+            if (shouldGenerate) {
+              operationsToGenerate = data.operations;
+            }
+            break;
+          }
         }
       }
 
-      if (shouldGenerate) {
-        this.emitHandlerFile(data.operations, data.models, fileName);
+      if (shouldGenerate && operationsToGenerate.length > 0) {
+        this.emitHandlerFile(
+          operationsToGenerate,
+          data.models,
+          fileName,
+          targetNamespace
+        );
       }
     }
   }
@@ -278,13 +367,14 @@ class GoEmitter {
   private emitHandlerFile(
     operations: Operation[],
     models: Model[],
-    fileName: string
+    fileName: string,
+    namespace?: Namespace
   ) {
     let goCode = `package http\n\n`;
 
     // Emit handler functions (no separate request structs since we use inline)
     for (const operation of operations) {
-      goCode += this.emitHandler(operation);
+      goCode += this.emitHandler(operation, namespace);
     }
 
     // Handle file writing based on whether file exists
@@ -305,9 +395,30 @@ class GoEmitter {
     }
   }
 
-  private emitHandler(operation: Operation): string {
+  private emitHandler(operation: Operation, namespace?: Namespace): string {
     const operationName = operation.name;
     const doc = getDoc(this.program, operation);
+
+    // Determine handler name using decorator
+    let handlerName = "Handler"; // default
+
+    // Check for @domainGinHandlerName on operation first
+    const operationHandlerName = getDomainGinHandlerName(
+      this.program,
+      operation
+    );
+    if (operationHandlerName) {
+      handlerName = operationHandlerName;
+    } else if (namespace) {
+      // Check for @domainGinHandlerName on namespace
+      const namespaceHandlerName = getDomainGinHandlerName(
+        this.program,
+        namespace
+      );
+      if (namespaceHandlerName) {
+        handlerName = namespaceHandlerName;
+      }
+    }
 
     let code = "";
 
@@ -333,7 +444,7 @@ class GoEmitter {
     // Add response comment
     code += `// Response: Expected response type based on operation definition\n`;
 
-    code += `func (h *Handler) ${operationName}(c *gin.Context) {\n`;
+    code += `func (h *${handlerName}) ${operationName}(c *gin.Context) {\n`;
 
     // Generate path and query parameter variables (commented)
     const paramVariables = this.generateParameterVariables(operation);
@@ -822,3 +933,11 @@ class GoEmitter {
     return false; // Default to false, enhance as needed
   }
 }
+
+// Export decorators
+export {
+  $domainGinHandlerGen,
+  $domainGinHandlerName,
+  getDomainGinHandlerName,
+  isDomainGinHandlerGen,
+} from "./decorators.js";

@@ -5,6 +5,66 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0] - 2025-08-04
+
+### Added
+
+- **🎯 Decorator-Based Generation Control**: Major new feature for flexible handler generation
+- **`@domainGinHandlerGen` decorator**: Mark namespaces or operations for handler generation
+- **`@domainGinHandlerName("CustomName")` decorator**: Specify custom handler struct names
+- **Multi-level generation control**: Operation-level decorators take precedence over namespace-level
+- **Improved namespace collection**: Support for multiple namespaces in single file
+- **Generation precedence system**: Operation-level > Namespace-level > Comment-based (backward compatible)
+
+### Features
+
+- **Operation-level generation**: Use `@domainGinHandlerGen` on specific operations to generate only those handlers
+- **Namespace-level generation**: Use `@domainGinHandlerGen` on namespace to generate all operations within it
+- **Custom handler names**: Replace default `Handler` with custom names like `UserHandler`, `AuthHandler` using `@domainGinHandlerName`
+- **Selective generation**: More granular control over which handlers are generated
+- **Backward compatibility**: Existing comment-based generation (`//!Generate`) still works
+- **Priority system**: Operation decorators override namespace decorators for maximum flexibility
+
+### Examples
+
+**Namespace-level generation:**
+
+```typespec
+@domainGinHandlerGen
+@domainGinHandlerName("UserHandler")
+@route("/users")
+namespace UserAPI {
+    @post op CreateUser(...): ...;  // Generated with UserHandler
+    @get op ListUsers(...): ...;    // Generated with UserHandler
+}
+```
+
+**Operation-level generation:**
+
+```typespec
+@route("/auth")
+namespace AuthAPI {
+    @post
+    @domainGinHandlerGen
+    @domainGinHandlerName("AuthHandler")
+    op Login(...): ...;         // Generated with AuthHandler
+
+    @post
+    op Register(...): ...;      // NOT generated (no decorator)
+}
+```
+
+### Breaking Changes
+
+- None - Fully backward compatible with v1.x
+
+### Technical Changes
+
+- Updated data structure to collect multiple namespaces per file
+- Enhanced decorator detection and processing logic
+- Improved handler name resolution with priority system
+- Added comprehensive decorator validation and error handling
+
 ## [1.0.0] - 2025-08-03
 
 ### Added
